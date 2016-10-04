@@ -74,9 +74,16 @@ static bool AppInitRawTx(int argc, char* argv[])
         strUsage += HelpMessageOpt("in=TXID:VOUT(:SEQUENCE_NUMBER)", _("Add input to TX"));
         strUsage += HelpMessageOpt("locktime=N", _("Set TX lock time to N"));
         strUsage += HelpMessageOpt("nversion=N", _("Set TX version to N"));
-        strUsage += HelpMessageOpt("outaddr=VALUE:ADDRESS", _("Add address-based output to TX"));
-        strUsage += HelpMessageOpt("outdata=[VALUE:]DATA", _("Add data-based output to TX"));
+        strUsage += HelpMessageOpt("outpubkey=VALUE:ADDRESS", _("Add Pay To Public Key output to TX"));
+        strUsage += HelpMessageOpt("outaddr=VALUE:ADDRESS", _("Add Pay To Public Key Hash output to TX"));
+        strUsage += HelpMessageOpt("outscripthash=VALUE:ADDRESS", _("Add Pay To Witness Public Key Hash output to TX"));
+        strUsage += HelpMessageOpt("outdata=[VALUE:]DATA", _("Add OP_RETURN data output to TX"));
         strUsage += HelpMessageOpt("outscript=VALUE:SCRIPT", _("Add raw script output to TX"));
+        strUsage += HelpMessageOpt("outscripthash=VALUE:SCRIPT", _("Add Pay To Script Hash output to TX"));
+        strUsage += HelpMessageOpt("outwitscripthash=VALUE:SCRIPT", _("Add Pay to Witness Script Hash output to TX"));
+        strUsage += HelpMessageOpt("outmultisig=VALUE:REQUIRED:ADDRESSES:ADDRESS1:ADDRESS2:....", _("Add Pay To n-of-m Multi-sig output to TX. n = REQUIRED, m = ADDRESSES"));
+        strUsage += HelpMessageOpt("outmultisigscripthash=VALUE:REQUIRED:ADDRESSES:ADDRESS1:ADDRESS2:....", _("Add an n-of-m Multi-sig (wrapped in Pay to Script Hash) output to TX. n = REQUIRED, m = ADDRESSES"));
+        strUsage += HelpMessageOpt("outmultisigwitscripthash=VALUE:REQUIRED:ADDRESSES:ADDRESS1:ADDRESS2:....", _("Add Pay To n-of-m Multi-sig (wrapped in Pay to Witness Script Hash) output to TX. n = REQUIRED, m = ADDRESSES"));
         strUsage += HelpMessageOpt("sign=SIGHASH-FLAGS", _("Add zero or more signatures to transaction") + ". " +
             _("This command requires JSON registers:") +
             _("prevtxs=JSON object") + ", " +
@@ -213,7 +220,33 @@ static void MutateTxAddInput(CMutableTransaction& tx, const string& strInput)
     tx.vin.push_back(txin);
 }
 
-static void MutateTxAddOutAddr(CMutableTransaction& tx, const string& strInput)
+static void MutateTxAddOutPubKey(CMutableTransaction& tx, const string& strInput)
+{
+    // separate VALUE:ADDRESS in string
+    size_t pos = strInput.find(':');
+    if ((pos == string::npos) ||
+        (pos == 0) ||
+        (pos == (strInput.size() - 1)))
+        throw runtime_error("TX output missing separator");
+
+    // extract and validate VALUE
+    string strValue = strInput.substr(0, pos);
+    CAmount value;
+    if (!ParseMoney(strValue, value))
+        throw runtime_error("invalid TX output value");
+
+    // extract and validate PUBKEY
+    CPubKey pubkey(ParseHex(strInput.substr(pos + 1, string::npos)));
+    if (!pubkey.IsFullyValid())
+        throw runtime_error("invalid TX output pubkey");
+    CScript scriptPubKey = GetScriptForRawPubKey(pubkey);
+
+    // construct TxOut, append to transaction output list
+    CTxOut txout(value, scriptPubKey);
+    tx.vout.push_back(txout);
+}
+
+static void MutateTxAddOutAddr(CMutableTransaction& tx, const string& strInput, bool paytowitnesspubkeyhash)
 {
     // separate VALUE:ADDRESS in string
     size_t pos = strInput.find(':');
@@ -233,9 +266,78 @@ static void MutateTxAddOutAddr(CMutableTransaction& tx, const string& strInput)
     CBitcoinAddress addr(strAddr);
     if (!addr.IsValid())
         throw runtime_error("invalid TX output address");
+    CScript scriptPubKey; // The scriptPubKey in the txOut
+    CScript script = GetScriptForDestination(addr.Get());
 
-    // build standard output script via GetScriptForDestination()
-    CScript scriptPubKey = GetScriptForDestination(addr.Get());
+    if (!paytowitnesspubkeyhash) {
+        // This is a pay to pub key hash. Build standard output script via
+        // GetScriptForDestination()
+        scriptPubKey = script;
+    }
+    else {
+        // This is a pay to witness pub key hash. Build the scriptPubKey.
+        scriptPubKey = GetScriptForWitness(script);
+    }
+
+    // construct TxOut, append to transaction output list
+    CTxOut txout(value, scriptPubKey);
+    tx.vout.push_back(txout);
+}
+
+static void MutateTxAddMultiSig(CMutableTransaction& tx, const string& strInput, bool paytoscripthash, bool paytowitnessscripthash)
+{
+    // Seperate into VALUE:REQUIRED:ADDRESSES:ADDRESS1:ADDRESS2:....
+    std::vector<std::string> vStrInputParts;
+    boost::split(vStrInputParts, strInput, boost::is_any_of(":"));
+
+    // Check that there are enough parametners
+    if (vStrInputParts.size()<3)
+        throw runtime_error("Not enough multisig parameters");
+
+    // Extract and validate VALUE
+    string strValue = vStrInputParts[0];
+    CAmount value;
+    if (!ParseMoney(strValue, value))
+        throw runtime_error("invalid TX output value");
+
+    // Extract REQUIRED
+    uint required = std::stoul(vStrInputParts[1]);
+
+    // Extract NUMKEYS
+    uint numkeys = std::stoul(vStrInputParts[2]);
+
+    // Validate there are the correct number of pubkeys
+    if (vStrInputParts.size() != numkeys + 3)
+        throw runtime_error("incorrect number of multisig pubkeys");
+
+    // extract and validate PUBKEYs
+    std::vector<CPubKey> pubkeys;
+    for(uint pos = 1; pos <= numkeys; pos++) {
+        // extract and validate PUBKEY
+        CPubKey pubkey(ParseHex(vStrInputParts[pos + 2]));
+        if (!pubkey.IsFullyValid())
+            throw runtime_error("invalid TX output pubkey");
+        pubkeys.push_back(pubkey);
+    }
+
+    CScript scriptPubKey; // The scriptPubKey in the txOut
+    CScript script = GetScriptForMultisig(required, pubkeys);
+
+    if (paytoscripthash) {
+        // Get the address for the redeem script, then call
+        // GetScriptForDestination() to construct a P2SH scriptPubKey.
+        CBitcoinAddress addr(script);
+        scriptPubKey = GetScriptForDestination(addr.Get());
+    }
+    else if (paytowitnessscripthash) {
+        // Call GetScriptForWitness() to build a P2WSH scriptPubKey
+        scriptPubKey = GetScriptForWitness(script);
+    }
+    else {
+        // This is a bare pay-to-script. The scriptPubKey is the script we
+        // parsed earlier.
+        scriptPubKey = script;
+    }
 
     // construct TxOut, append to transaction output list
     CTxOut txout(value, scriptPubKey);
@@ -271,7 +373,7 @@ static void MutateTxAddOutData(CMutableTransaction& tx, const string& strInput)
     tx.vout.push_back(txout);
 }
 
-static void MutateTxAddOutScript(CMutableTransaction& tx, const string& strInput)
+static void MutateTxAddOutScript(CMutableTransaction& tx, const string& strInput, bool paytoscripthash, bool paytowitnessscripthash)
 {
     // separate VALUE:SCRIPT in string
     size_t pos = strInput.find(':');
@@ -287,7 +389,26 @@ static void MutateTxAddOutScript(CMutableTransaction& tx, const string& strInput
 
     // extract and validate script
     string strScript = strInput.substr(pos + 1, string::npos);
-    CScript scriptPubKey = ParseScript(strScript); // throws on err
+    CScript scriptPubKey; // The scriptPubKey in the txOut
+    CScript script = ParseScript(strScript);
+    // This could either refer to the scriptPubKey (for a bare pay-to-script)
+    // or the redeem script (for a P2SH or P2WSH)
+
+    if (paytoscripthash) {
+        // Get the address for the redeem script, then call
+        // GetScriptForDestination() to construct a P2SH scriptPubKey
+        CBitcoinAddress addr(script);
+        scriptPubKey = GetScriptForDestination(addr.Get());
+    }
+    else if (paytowitnessscripthash) {
+        // Call GetScriptForWitness() to build a P2WSH scriptPubKey
+        scriptPubKey = GetScriptForWitness(script);
+    }
+    else {
+        // This is a bare pay-to-script. The scriptPubKey is the script we
+        // parsed earlier.
+        scriptPubKey = script;
+    }
 
     // construct TxOut, append to transaction output list
     CTxOut txout(value, scriptPubKey);
@@ -529,12 +650,26 @@ static void MutateTx(CMutableTransaction& tx, const string& command,
 
     else if (command == "delout")
         MutateTxDelOutput(tx, commandVal);
+    else if (command == "outpubkey")
+        MutateTxAddOutPubKey(tx, commandVal);
     else if (command == "outaddr")
-        MutateTxAddOutAddr(tx, commandVal);
+        MutateTxAddOutAddr(tx, commandVal, false);
+    else if (command == "outwitpubkeyhash")
+        MutateTxAddOutAddr(tx, commandVal, true);
+    else if (command == "outmultisig")
+        MutateTxAddMultiSig(tx, commandVal, false, false);
+    else if (command == "outmultisigscripthash")
+        MutateTxAddMultiSig(tx, commandVal, true, false);
+    else if (command == "outmultisigwitscripthash")
+        MutateTxAddMultiSig(tx, commandVal, false, true);
+    else if (command == "outscript")
+        MutateTxAddOutScript(tx, commandVal, false, false);
+    else if (command == "outscripthash")
+        MutateTxAddOutScript(tx, commandVal, true, false);
+    else if (command == "outwitscripthash")
+        MutateTxAddOutScript(tx, commandVal, false, true);
     else if (command == "outdata")
         MutateTxAddOutData(tx, commandVal);
-    else if (command == "outscript")
-        MutateTxAddOutScript(tx, commandVal);
 
     else if (command == "sign") {
         if (!ecc) { ecc.reset(new Secp256k1Init()); }
