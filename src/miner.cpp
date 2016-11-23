@@ -168,7 +168,11 @@ CBlockTemplate* BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn)
     nLastBlockTx = nBlockTx;
     nLastBlockSize = nBlockSize;
     nLastBlockWeight = nBlockWeight;
-    LogPrintf("CreateNewBlock(): total size %u txs: %u fees: %ld sigops %d\n", nBlockSize, nBlockTx, nFees, nBlockSigOpsCost);
+    // If we're accounting for size, log size and weight. Otherwise just log weight.
+    if (fNeedSizeAccounting)
+        LogPrintf("CreateNewBlock(): total weight: %u total size %u txs: %u fees: %ld sigops %d\n", nBlockWeight, nBlockSize, nBlockTx, nFees, nBlockSigOpsCost);
+    else
+        LogPrintf("CreateNewBlock(): total weight %u txs: %u fees: %ld sigops %d\n", nBlockWeight, nBlockTx, nFees, nBlockSigOpsCost);
 
     // Create coinbase transaction.
     CMutableTransaction coinbaseTx;
