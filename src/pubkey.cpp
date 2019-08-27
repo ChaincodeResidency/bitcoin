@@ -295,6 +295,20 @@ bool CPubKey::CheckPayToContract(const CPubKey& base, const uint256& hash) const
     return memcmp(out, vch, COMPRESSED_PUBLIC_KEY_SIZE) == 0;
 }
 
+bool CPubKey::CreatePayToContract(CPubKey& res, const uint256& hash) const
+{
+    if (!IsCompressed()) return false;
+    secp256k1_pubkey base_point;
+    if (!secp256k1_ec_pubkey_parse(secp256k1_context_verify, &base_point, vch, size())) return false;
+    if (!secp256k1_ec_pubkey_tweak_add(secp256k1_context_verify, &base_point, hash.begin())) return false;
+
+    size_t tweaked_len = COMPRESSED_PUBLIC_KEY_SIZE;
+    unsigned char tweaked[tweaked_len];
+    secp256k1_ec_pubkey_serialize(secp256k1_context_verify, tweaked, &tweaked_len, &base_point, SECP256K1_EC_COMPRESSED);
+    res.Set(tweaked, tweaked + tweaked_len);
+    return true;
+}
+
 /* static */ bool CPubKey::CheckLowS(const std::vector<unsigned char>& vchSig) {
     secp256k1_ecdsa_signature sig;
     if (!ecdsa_signature_parse_der_lax(secp256k1_context_verify, &sig, vchSig.data(), vchSig.size())) {

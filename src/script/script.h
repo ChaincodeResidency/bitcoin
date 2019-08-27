@@ -59,6 +59,14 @@ std::vector<unsigned char> ToByteVector(const T& in)
     return std::vector<unsigned char>(in.begin(), in.end());
 }
 
+
+template <typename I, typename O>
+void ExtendByteVector(const I& in, std::vector<O>& out)
+{
+    out.reserve(out.size() + in.size());
+    out.insert(out.end(), in.begin(), in.end());
+}
+
 /** Script opcodes */
 enum opcodetype
 {

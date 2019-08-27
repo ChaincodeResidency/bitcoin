@@ -233,6 +233,16 @@ public:
         return obj;
     }
 
+    UniValue operator()(const WitnessV1Point& id) const
+    {
+        //TODO: What other data should be here?
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("iswitness", true);
+        obj.pushKV("witness_version", 1);
+        obj.pushKV("witness_program", HexStr(id.begin(), id.end()));
+        return obj;
+    }
+
     UniValue operator()(const WitnessUnknown& id) const
     {
         UniValue obj(UniValue::VOBJ);

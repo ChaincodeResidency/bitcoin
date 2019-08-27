@@ -56,6 +56,14 @@ public:
         return bech32::Encode(m_params.Bech32HRP(), data);
     }
 
+    std::string operator()(const WitnessV1Point& id) const
+    {
+        std::vector<unsigned char> data = {1};
+        data.reserve(53);
+        ConvertBits<8, 5, true>([&](unsigned char c) { data.push_back(c); }, id.begin(), id.end());
+        return bech32::Encode(m_params.Bech32HRP(), data);
+    }
+
     std::string operator()(const WitnessUnknown& id) const
     {
         if (id.version < 1 || id.version > 16 || id.length < 2 || id.length > 40) {

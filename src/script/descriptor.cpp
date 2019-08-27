@@ -13,7 +13,7 @@
 #include <util/bip32.h>
 #include <util/system.h>
 #include <util/strencodings.h>
-
+#include <util/memory.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -343,6 +343,9 @@ class DescriptorImpl : public Descriptor
     const std::unique_ptr<DescriptorImpl> m_subdescriptor_arg;
     //! The string name of the descriptor function.
     const std::string m_name;
+    //! A binary tree that represents the taproot structure (nullptr for everything else).
+    typedef BinaryTree<DescriptorImpl> TaprootTree;
+    const std::unique_ptr<TaprootTree> m_taproot;
 
 protected:
     //! Return a serialization of anything except pubkey and script arguments, to be prepended to those.
@@ -359,13 +362,59 @@ protected:
      *             The script arguments to this function are automatically added, as is the origin info of the provided pubkeys.
      *  @return A vector with scriptPubKeys for this descriptor.
      */
-    virtual std::vector<CScript> MakeScripts(const std::vector<CPubKey>& pubkeys, const CScript* script, FlatSigningProvider& out) const = 0;
+    virtual std::vector<CScript> MakeScripts(const std::vector<CPubKey>& pubkeys, const CScript* script, const BinaryTree<CScript>* taproot, FlatSigningProvider& out) const = 0;
+
+    void ToStringTaprootHelper(const SigningProvider* arg, std::string& out, bool priv, const TaprootTree* tap) const
+    {
+        if (!tap) return;
+        if (tap->IsLeaf()) {
+            std::string tmp;
+            tap->GetObj()->ToStringHelper(arg, tmp, priv);
+            out += tmp;
+            return;
+        }
+        out.push_back('{');
+        ToStringTaprootHelper(arg, out, priv, tap->GetRawLeftChild());
+        out.push_back(',');
+        ToStringTaprootHelper(arg, out, priv, tap->GetRawRightChild());
+        out.push_back('}');
+    }
+
+    bool ToScriptTreeHelper(const SigningProvider& arg, std::vector<CPubKey>& pubkeys, FlatSigningProvider& out, BinaryTree<CScript>* script_root, const TaprootTree* desc_root) const
+    {
+        if (!desc_root || !script_root) return false;
+        if (desc_root->IsLeaf()) {
+            // TODO: Cache? and what should the position be exactly?.
+            std::vector<CScript> script;
+            FlatSigningProvider subprovider;
+            if(!desc_root->GetObj()->Expand(0, arg, script, subprovider)) return false;
+            out = Merge(out, subprovider);
+            return script_root->InsertLeaf(std::move(MakeUnique<CScript>(script[0])));
+        }
+        if(!ToScriptTreeHelper(arg, pubkeys, out, script_root->GetInitLeftChild(), desc_root->GetRawLeftChild())) return false;
+        return ToScriptTreeHelper(arg, pubkeys, out, script_root->GetInitRightChild(), desc_root->GetRawRightChild());
+    }
+
+    void ExpandPrivateTreeHelper(const SigningProvider& provider, FlatSigningProvider& out, TaprootTree* desc_root) const
+    {
+        if (!desc_root) return;
+        if (desc_root->IsLeaf()) {
+            // TODO: Position?
+            FlatSigningProvider subprovider;
+            desc_root->GetObj()->ExpandPrivate(0, provider, subprovider);
+            out = Merge(out, subprovider);
+            return;
+        }
+        ExpandPrivateTreeHelper(provider, out, desc_root->GetRawLeftChild());
+        ExpandPrivateTreeHelper(provider, out, desc_root->GetRawRightChild());
+    }
 
 public:
-    DescriptorImpl(std::vector<std::unique_ptr<PubkeyProvider>> pubkeys, std::unique_ptr<DescriptorImpl> script, const std::string& name) : m_pubkey_args(std::move(pubkeys)), m_subdescriptor_arg(std::move(script)), m_name(name) {}
+    DescriptorImpl(std::vector<std::unique_ptr<PubkeyProvider>> pubkeys, std::unique_ptr<DescriptorImpl> script, std::unique_ptr<TaprootTree> taproot, const std::string& name) : m_pubkey_args(std::move(pubkeys)), m_subdescriptor_arg(std::move(script)), m_taproot(std::move(taproot)), m_name(name) {}
 
     bool IsSolvable() const override
     {
+        // TODO: Add taproot exception.
         if (m_subdescriptor_arg) {
             if (!m_subdescriptor_arg->IsSolvable()) return false;
         }
@@ -403,6 +452,10 @@ public:
             std::string tmp;
             if (!m_subdescriptor_arg->ToStringHelper(arg, tmp, priv)) return false;
             ret += std::move(tmp);
+        }
+        if (m_taproot) {
+            ret += ",";
+            ToStringTaprootHelper(arg, ret, priv, m_taproot.get());
         }
         out = std::move(ret) + ")";
         return true;
@@ -463,13 +516,17 @@ public:
         if (m_subdescriptor_arg) {
             for (const auto& subscript : subscripts) {
                 out.scripts.emplace(CScriptID(subscript), subscript);
-                std::vector<CScript> addscripts = MakeScripts(pubkeys, &subscript, out);
+                std::vector<CScript> addscripts = MakeScripts(pubkeys, &subscript, nullptr, out);
                 for (auto& addscript : addscripts) {
                     output_scripts.push_back(std::move(addscript));
                 }
             }
+        } else if (m_taproot) {
+            BinaryTree<CScript> scripted_taproot;
+            if(!ToScriptTreeHelper(arg, pubkeys, out, &scripted_taproot, m_taproot.get())) return false;
+            output_scripts = MakeScripts(pubkeys, nullptr, &scripted_taproot, out);
         } else {
-            output_scripts = MakeScripts(pubkeys, nullptr, out);
+            output_scripts = MakeScripts(pubkeys, nullptr, nullptr, out);
         }
         return true;
     }
@@ -497,6 +554,11 @@ public:
             m_subdescriptor_arg->ExpandPrivate(pos, provider, subprovider);
             out = Merge(out, subprovider);
         }
+        if (m_taproot) {
+            FlatSigningProvider subprovider;
+            ExpandPrivateTreeHelper(provider, subprovider, m_taproot.get());
+            out = Merge(out, subprovider);
+        }
     }
 };
 
@@ -515,9 +577,9 @@ class AddressDescriptor final : public DescriptorImpl
     const CTxDestination m_destination;
 protected:
     std::string ToStringExtra() const override { return EncodeDestination(m_destination); }
-    std::vector<CScript> MakeScripts(const std::vector<CPubKey>&, const CScript*, FlatSigningProvider&) const override { return Singleton(GetScriptForDestination(m_destination)); }
+    std::vector<CScript> MakeScripts(const std::vector<CPubKey>&, const CScript*, const BinaryTree<CScript>*, FlatSigningProvider&) const override { return Singleton(GetScriptForDestination(m_destination)); }
 public:
-    AddressDescriptor(CTxDestination destination) : DescriptorImpl({}, {}, "addr"), m_destination(std::move(destination)) {}
+    AddressDescriptor(CTxDestination destination) : DescriptorImpl({}, {}, {}, "addr"), m_destination(std::move(destination)) {}
     bool IsSolvable() const final { return false; }
 };
 
@@ -527,9 +589,9 @@ class RawDescriptor final : public DescriptorImpl
     const CScript m_script;
 protected:
     std::string ToStringExtra() const override { return HexStr(m_script.begin(), m_script.end()); }
-    std::vector<CScript> MakeScripts(const std::vector<CPubKey>&, const CScript*, FlatSigningProvider&) const override { return Singleton(m_script); }
+    std::vector<CScript> MakeScripts(const std::vector<CPubKey>&, const CScript*, const BinaryTree<CScript>*, FlatSigningProvider&) const override { return Singleton(m_script); }
 public:
-    RawDescriptor(CScript script) : DescriptorImpl({}, {}, "raw"), m_script(std::move(script)) {}
+    RawDescriptor(CScript script) : DescriptorImpl({}, {}, {}, "raw"), m_script(std::move(script)) {}
     bool IsSolvable() const final { return false; }
 };
 
@@ -537,44 +599,44 @@ public:
 class PKDescriptor final : public DescriptorImpl
 {
 protected:
-    std::vector<CScript> MakeScripts(const std::vector<CPubKey>& keys, const CScript*, FlatSigningProvider&) const override { return Singleton(GetScriptForRawPubKey(keys[0])); }
+    std::vector<CScript> MakeScripts(const std::vector<CPubKey>& keys, const CScript*, const BinaryTree<CScript>*, FlatSigningProvider&) const override { return Singleton(GetScriptForRawPubKey(keys[0])); }
 public:
-    PKDescriptor(std::unique_ptr<PubkeyProvider> prov) : DescriptorImpl(Singleton(std::move(prov)), {}, "pk") {}
+    PKDescriptor(std::unique_ptr<PubkeyProvider> prov) : DescriptorImpl(Singleton(std::move(prov)), {}, {}, "pk") {}
 };
 
 /** A parsed pkh(P) descriptor. */
 class PKHDescriptor final : public DescriptorImpl
 {
 protected:
-    std::vector<CScript> MakeScripts(const std::vector<CPubKey>& keys, const CScript*, FlatSigningProvider& out) const override
+    std::vector<CScript> MakeScripts(const std::vector<CPubKey>& keys, const CScript*, const BinaryTree<CScript>*, FlatSigningProvider& out) const override
     {
         CKeyID id = keys[0].GetID();
         out.pubkeys.emplace(id, keys[0]);
         return Singleton(GetScriptForDestination(PKHash(id)));
     }
 public:
-    PKHDescriptor(std::unique_ptr<PubkeyProvider> prov) : DescriptorImpl(Singleton(std::move(prov)), {}, "pkh") {}
+    PKHDescriptor(std::unique_ptr<PubkeyProvider> prov) : DescriptorImpl(Singleton(std::move(prov)), {}, {}, "pkh") {}
 };
 
 /** A parsed wpkh(P) descriptor. */
 class WPKHDescriptor final : public DescriptorImpl
 {
 protected:
-    std::vector<CScript> MakeScripts(const std::vector<CPubKey>& keys, const CScript*, FlatSigningProvider& out) const override
+    std::vector<CScript> MakeScripts(const std::vector<CPubKey>& keys, const CScript*, const BinaryTree<CScript>*, FlatSigningProvider& out) const override
     {
         CKeyID id = keys[0].GetID();
         out.pubkeys.emplace(id, keys[0]);
         return Singleton(GetScriptForDestination(WitnessV0KeyHash(id)));
     }
 public:
-    WPKHDescriptor(std::unique_ptr<PubkeyProvider> prov) : DescriptorImpl(Singleton(std::move(prov)), {}, "wpkh") {}
+    WPKHDescriptor(std::unique_ptr<PubkeyProvider> prov) : DescriptorImpl(Singleton(std::move(prov)), {}, {}, "wpkh") {}
 };
 
 /** A parsed combo(P) descriptor. */
 class ComboDescriptor final : public DescriptorImpl
 {
 protected:
-    std::vector<CScript> MakeScripts(const std::vector<CPubKey>& keys, const CScript*, FlatSigningProvider& out) const override
+    std::vector<CScript> MakeScripts(const std::vector<CPubKey>& keys, const CScript*, const BinaryTree<CScript>*, FlatSigningProvider& out) const override
     {
         std::vector<CScript> ret;
         CKeyID id = keys[0].GetID();
@@ -590,7 +652,7 @@ protected:
         return ret;
     }
 public:
-    ComboDescriptor(std::unique_ptr<PubkeyProvider> prov) : DescriptorImpl(Singleton(std::move(prov)), {}, "combo") {}
+    ComboDescriptor(std::unique_ptr<PubkeyProvider> prov) : DescriptorImpl(Singleton(std::move(prov)), {}, {}, "combo") {}
 };
 
 /** A parsed multi(...) descriptor. */
@@ -599,28 +661,109 @@ class MultisigDescriptor final : public DescriptorImpl
     const int m_threshold;
 protected:
     std::string ToStringExtra() const override { return strprintf("%i", m_threshold); }
-    std::vector<CScript> MakeScripts(const std::vector<CPubKey>& keys, const CScript*, FlatSigningProvider&) const override { return Singleton(GetScriptForMultisig(m_threshold, keys)); }
+    std::vector<CScript> MakeScripts(const std::vector<CPubKey>& keys, const CScript*, const BinaryTree<CScript>*, FlatSigningProvider&) const override { return Singleton(GetScriptForMultisig(m_threshold, keys)); }
 public:
-    MultisigDescriptor(int threshold, std::vector<std::unique_ptr<PubkeyProvider>> providers) : DescriptorImpl(std::move(providers), {}, "multi"), m_threshold(threshold) {}
+    MultisigDescriptor(int threshold, std::vector<std::unique_ptr<PubkeyProvider>> providers) : DescriptorImpl(std::move(providers), {}, {}, "multi"), m_threshold(threshold) {}
 };
 
 /** A parsed sh(...) descriptor. */
 class SHDescriptor final : public DescriptorImpl
 {
 protected:
-    std::vector<CScript> MakeScripts(const std::vector<CPubKey>&, const CScript* script, FlatSigningProvider&) const override { return Singleton(GetScriptForDestination(ScriptHash(*script))); }
+    std::vector<CScript> MakeScripts(const std::vector<CPubKey>&, const CScript* script, const BinaryTree<CScript>*, FlatSigningProvider&) const override { return Singleton(GetScriptForDestination(ScriptHash(*script))); }
 public:
-    SHDescriptor(std::unique_ptr<DescriptorImpl> desc) : DescriptorImpl({}, std::move(desc), "sh") {}
+    SHDescriptor(std::unique_ptr<DescriptorImpl> desc) : DescriptorImpl({}, std::move(desc), {}, "sh") {}
 };
 
 /** A parsed wsh(...) descriptor. */
 class WSHDescriptor final : public DescriptorImpl
 {
 protected:
-    std::vector<CScript> MakeScripts(const std::vector<CPubKey>&, const CScript* script, FlatSigningProvider&) const override { return Singleton(GetScriptForDestination(WitnessV0ScriptHash(*script))); }
+    std::vector<CScript> MakeScripts(const std::vector<CPubKey>&, const CScript* script, const BinaryTree<CScript>*, FlatSigningProvider&) const override { return Singleton(GetScriptForDestination(WitnessV0ScriptHash(*script))); }
 public:
-    WSHDescriptor(std::unique_ptr<DescriptorImpl> desc) : DescriptorImpl({}, std::move(desc), "wsh") {}
+    WSHDescriptor(std::unique_ptr<DescriptorImpl> desc) : DescriptorImpl({}, std::move(desc), {}, "wsh") {}
 };
+
+// This is copied from `interpreter.cpp`, with the hope that when taproot PR is open this code will move to script.h or some other common header.
+static CHashWriter TaggedHash(const std::string& tag)
+{
+    CHashWriter writer(SER_GETHASH, 0);
+    uint256 taghash;
+    CSHA256().Write((unsigned char*)tag.data(), tag.size()).Finalize(taghash.begin());
+    writer << taghash << taghash;
+    return writer;
+}
+
+static const CHashWriter HasherTapLeaf = TaggedHash("TapLeaf");
+static const CHashWriter HasherTapBranch = TaggedHash("TapBranch");
+static const CHashWriter HasherTapTweak = TaggedHash("TapTweak");
+
+typedef BinaryTree<DescriptorImpl> TaprootTree;
+class TapDescriptor final : public DescriptorImpl
+{
+
+protected:
+
+    std::vector<ScriptPath> ConstructScriptPathsHelper(const BinaryTree<CScript>& tap, uint256& curr_hash) const {
+        if (tap.IsEmpty()) throw std::runtime_error("Got a partial binary tree"); // Should never happen.
+        if (tap.IsLeaf()) {
+            ScriptPath ret;
+            ret.leaf = *tap.GetObj();
+            CHashWriter leaf_hash = HasherTapLeaf;
+            leaf_hash << ret.version << ret.leaf;
+            curr_hash =  leaf_hash.GetSHA256();
+            return std::vector<ScriptPath>{ret};
+        }
+        if (!tap.GetRawRightChild() || !tap.GetRawLeftChild()) throw std::runtime_error("WTFFF");
+
+        uint256 right_hash;
+        uint256 left_hash;
+        std::vector<ScriptPath> right = ConstructScriptPathsHelper(*tap.GetRawRightChild(), right_hash);
+        std::vector<ScriptPath> left = ConstructScriptPathsHelper(*tap.GetRawLeftChild(), left_hash);
+
+        CHashWriter branch = HasherTapBranch;
+        if (std::lexicographical_compare(left_hash.begin(), left_hash.end(), right_hash.begin(), right_hash.end())) {
+            branch << left_hash << right_hash;
+        } else {
+            branch << right_hash << left_hash;
+        }
+        curr_hash = branch.GetSHA256();
+        for (ScriptPath& path : right) path.path.push_back(left_hash);
+        for (ScriptPath& path : left) path.path.push_back(right_hash);
+
+        right.reserve(left.size());
+        right.insert(right.end(), left.begin(), left.end());
+
+        return right;
+    }
+
+    std::vector<CScript> MakeScripts(const std::vector<CPubKey>& keys, const CScript* s, const BinaryTree<CScript>* tree, FlatSigningProvider& out) const override {
+        CPubKey pubkey{keys[0]};
+        if (tree) {
+            uint256 root_hash;
+            std::vector<ScriptPath> paths = ConstructScriptPathsHelper(*tree, root_hash);
+            CHashWriter tweak = HasherTapTweak;
+            tweak << MakeSpan(pubkey) << root_hash;
+            uint256 hashed_tweak = tweak.GetSHA256();
+            CPubKey tweaked;
+            pubkey.CreatePayToContract(tweaked, hashed_tweak);
+
+            out.p2c_tweaks.emplace(tweaked.GetID(), std::make_pair(pubkey, hashed_tweak));
+            out.taproot_paths.emplace(tweaked.GetID(), std::move(paths));
+            pubkey = tweaked;
+        }
+        // TODO: Look into where is the *spending script generated*.
+        // TODO: Add all the needed unit tests :).
+        return Singleton(GetScriptForDestination(WitnessV1Point(pubkey)));
+    }
+public:
+
+    bool IsSolvable() const final { return true; }
+    TapDescriptor(std::unique_ptr<PubkeyProvider> prov) : DescriptorImpl(Singleton(std::move(prov)), {}, {}, "tap") {}
+    TapDescriptor(std::unique_ptr<PubkeyProvider> prov, std::unique_ptr<BinaryTree<DescriptorImpl>> taproot) : DescriptorImpl(Singleton(std::move(prov)), {}, std::move(taproot), "tap") {}
+};
+
+
 
 ////////////////////////////////////////////////////////////////////////////
 // Parser                                                                 //
@@ -630,7 +773,10 @@ enum class ParseScriptContext {
     TOP,
     P2SH,
     P2WSH,
+    Tap,
 };
+
+std::unique_ptr<DescriptorImpl> ParseScript(Span<const char>& sp, ParseScriptContext ctx, FlatSigningProvider& out, std::string& error);
 
 /** Parse a constant. If successful, sp is updated to skip the constant and return true. */
 bool Const(const std::string& str, Span<const char>& sp)
@@ -687,6 +833,20 @@ std::vector<Span<const char>> Split(const Span<const char>& sp, char sep)
     }
     ret.emplace_back(start, it);
     return ret;
+}
+
+/** Split a string at the first instance of sep, returning a pair. */
+std::pair<Span<const char>, Span<const char>> SplitOnce(const Span<const char>& sp, char sep)
+{
+    auto it = sp.begin();
+    auto start = it;
+    while (it != sp.end()) {
+        if (*it == sep) {
+            return std::make_pair(Span<const char>(start, it), Span<const char>(it + 1, sp.end()));
+        }
+        ++it;
+    }
+    return std::make_pair(Span<const char>(start, sp.end()), Span<const char>(sp.end(), sp.end()));
 }
 
 /** Parse a key path, being passed a split list of elements (the first element is ignored). */
@@ -805,17 +965,81 @@ std::unique_ptr<PubkeyProvider> ParsePubkey(const Span<const char>& sp, bool per
     return MakeUnique<OriginPubkeyProvider>(std::move(info), std::move(provider));
 }
 
+bool InsertTaproot(const Span<const char>& sp, TaprootTree* node, FlatSigningProvider& out, std::string& error)
+{
+    if (!node) return false;
+
+    auto it = sp.begin();
+    while (it != sp.end()) {
+        switch(*it) {
+        case '{':
+            return InsertTaproot(Span<const char>(it+1, sp.end()), node->GetInitLeftChild(), out, error);
+        case ',': {
+            if (*(it-1) == ')') {
+                auto desc_sp = Span<const char>(sp.begin(), it);
+                std::unique_ptr<DescriptorImpl> desc = ParseScript(desc_sp, ParseScriptContext::Tap, out, error);
+                if(!desc || !node->InsertLeaf(std::move(desc))) {
+                    if (error.empty()) error = "Too many leafs on the same level";
+                    return false;
+                }
+            }
+            return InsertTaproot(Span<const char>(it+1, sp.end()), node->GetInitRightSibling(), out, error);
+        }
+        case '}': {
+            if (*(it-1) == ')') {
+                auto desc_sp = Span<const char>(sp.begin(), it);
+                std::unique_ptr<DescriptorImpl> desc = ParseScript(desc_sp, ParseScriptContext::Tap, out, error);
+                if(!desc || !node->InsertLeaf(std::move(desc))) {
+                    if (error.empty()) error = "Too many leafs on the same level";
+                    return false;
+                }
+            }
+            auto parent = node->GetParent();
+            if (!parent) {
+                error = "Too many '{'";
+                return false;
+            } else if (!parent->IsFull()) {
+                error = "Missing leafs";
+                return false;
+            }
+            return InsertTaproot(Span<const char>(it+1, sp.end()), parent, out, error);
+        }
+        }
+        ++it;
+    }
+    if (node->IsRoot() && node->IsEmpty()) {
+        auto desc_sp = Span<const char>(sp.begin(), it);
+        std::unique_ptr<DescriptorImpl> desc = ParseScript(desc_sp, ParseScriptContext::Tap, out, error);
+        if(!desc || !node->InsertLeaf(std::move(desc))) {
+            if (error.empty()) error = "Too many leafs on the same level";
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Parse a taproot descriptor */
+std::unique_ptr<TapDescriptor> ParseTaproot(const Span<const char>& sp, std::unique_ptr<PubkeyProvider> internal_key, FlatSigningProvider& out, std::string& error)
+{
+    if (sp.size() == 0) return MakeUnique<TapDescriptor>(std::move(internal_key));
+//    if ((*sp.begin() != '{') || (*(sp.end()-1) != '}')) return nullptr;
+
+    auto root = MakeUnique<TaprootTree>(TaprootTree());
+    if(!InsertTaproot(sp, root.get(), out, error)) return nullptr;
+
+    return MakeUnique<TapDescriptor>(std::move(internal_key), std::move(root));
+}
 /** Parse a script in a particular context. */
 std::unique_ptr<DescriptorImpl> ParseScript(Span<const char>& sp, ParseScriptContext ctx, FlatSigningProvider& out, std::string& error)
 {
     auto expr = Expr(sp);
     if (Func("pk", expr)) {
-        auto pubkey = ParsePubkey(expr, ctx != ParseScriptContext::P2WSH, out, error);
+        auto pubkey = ParsePubkey(expr, (ctx != ParseScriptContext::P2WSH && ctx != ParseScriptContext::Tap), out, error);
         if (!pubkey) return nullptr;
         return MakeUnique<PKDescriptor>(std::move(pubkey));
     }
     if (Func("pkh", expr)) {
-        auto pubkey = ParsePubkey(expr, ctx != ParseScriptContext::P2WSH, out, error);
+        auto pubkey = ParsePubkey(expr, (ctx != ParseScriptContext::P2WSH && ctx != ParseScriptContext::Tap), out, error);
         if (!pubkey) return nullptr;
         return MakeUnique<PKHDescriptor>(std::move(pubkey));
     }
@@ -827,7 +1051,7 @@ std::unique_ptr<DescriptorImpl> ParseScript(Span<const char>& sp, ParseScriptCon
         error = "Cannot have combo in non-top level";
         return nullptr;
     }
-    if (Func("multi", expr)) {
+    if (ctx != ParseScriptContext::Tap && Func("multi", expr)) {
         auto threshold = Expr(expr);
         uint32_t thres;
         std::vector<std::unique_ptr<PubkeyProvider>> providers;
@@ -871,7 +1095,7 @@ std::unique_ptr<DescriptorImpl> ParseScript(Span<const char>& sp, ParseScriptCon
         }
         return MakeUnique<MultisigDescriptor>(thres, std::move(providers));
     }
-    if (ctx != ParseScriptContext::P2WSH && Func("wpkh", expr)) {
+    if (ctx != ParseScriptContext::P2WSH && ctx != ParseScriptContext::Tap && Func("wpkh", expr)) {
         auto pubkey = ParsePubkey(expr, false, out, error);
         if (!pubkey) return nullptr;
         return MakeUnique<WPKHDescriptor>(std::move(pubkey));
@@ -887,7 +1111,7 @@ std::unique_ptr<DescriptorImpl> ParseScript(Span<const char>& sp, ParseScriptCon
         error = "Cannot have sh in non-top level";
         return nullptr;
     }
-    if (ctx != ParseScriptContext::P2WSH && Func("wsh", expr)) {
+    if (ctx != ParseScriptContext::P2WSH && ctx != ParseScriptContext::Tap && Func("wsh", expr)) {
         auto desc = ParseScript(expr, ParseScriptContext::P2WSH, out, error);
         if (!desc || expr.size()) return nullptr;
         return MakeUnique<WSHDescriptor>(std::move(desc));
@@ -911,6 +1135,12 @@ std::unique_ptr<DescriptorImpl> ParseScript(Span<const char>& sp, ParseScriptCon
         }
         auto bytes = ParseHex(str);
         return MakeUnique<RawDescriptor>(CScript(bytes.begin(), bytes.end()));
+    }
+    if (ctx == ParseScriptContext::TOP && Func("tap", expr)) {
+        auto key_only = SplitOnce(expr, ',');
+        auto internal_key = ParsePubkey(key_only.first, false, out, error);
+        if (!internal_key) return nullptr;
+        return ParseTaproot(key_only.second, std::move(internal_key), out, error);
     }
     if (ctx == ParseScriptContext::P2SH) {
         error = "A function is needed within P2SH";
@@ -985,6 +1215,54 @@ std::unique_ptr<DescriptorImpl> InferScript(const CScript& script, ParseScriptCo
             auto sub = InferScript(subscript, ParseScriptContext::P2WSH, provider);
             if (sub) return MakeUnique<WSHDescriptor>(std::move(sub));
         }
+    }
+    if (txntype == TX_WITNESS_V1_TAPROOT && ctx == ParseScriptContext::TOP) {
+        data[0][0]+=2;
+        CPubKey address(data[0]);
+        std::vector<ScriptPath> paths;
+        std::unique_ptr<BinaryTree<DescriptorImpl>> taproot;
+        if(provider.GetScriptPaths(address.GetID(), paths)) {
+            std::list<std::pair<std::vector<uint256>,BinaryTree<DescriptorImpl>>> nodes(paths.size());
+
+
+            std::sort(paths.begin(), paths.end(), [](const ScriptPath& a, const ScriptPath& b){
+                if (a.path.size() == b.path.size()) {
+                    return std::lexicographical_compare(a.path.rbegin(), a.path.rend(), b.path.rbegin(), b.path.rend());
+                } else {
+                    return a.path.size() > b.path.size();
+                }
+            });
+
+            std::transform(paths.begin(), paths.end(), nodes.begin(), [&provider](const ScriptPath& a){
+              std::unique_ptr<DescriptorImpl> script = InferScript(a.leaf, ParseScriptContext::Tap, provider);
+                return std::make_pair(a.path, BinaryTree<DescriptorImpl>(std::move(script)));
+            });
+
+            while (nodes.size() > 1) {
+                auto curr = nodes.begin();
+                while (curr != nodes.end()) {
+                    auto next = std::next(curr);
+                    if (!(curr->first.size() == next->first.size() && std::equal(curr->first.rbegin(), curr->first.rend()-1, next->first.rbegin()))) return nullptr;
+                    BinaryTree<DescriptorImpl> par;
+                    par.InsertLeft(std::move(curr->second)); par.InsertRight(std::move(next->second));
+                    curr->second = std::move(par);
+                    curr->first.erase(curr->first.begin());
+                    nodes.erase(next);
+                    if (curr != nodes.end() && curr->first.size() != std::next(curr)->first.size()) ++curr;
+                }
+            }
+            if (!nodes.back().first.empty()) return nullptr;
+            taproot = MakeUnique<BinaryTree<DescriptorImpl>>(std::move(nodes.back().second));
+        }
+        CPubKey base;
+        uint256 tweak;
+        std::unique_ptr<PubkeyProvider> internal_key;
+        if (provider.GetP2CTweaks(address.GetID(), base, tweak)) {
+            internal_key =  InferPubkey(base, ParseScriptContext::Tap, provider);
+        } else {
+            internal_key = InferPubkey(address, ParseScriptContext::Tap, provider);
+        }
+        return MakeUnique<TapDescriptor>(std::move(internal_key), std::move(taproot));
     }
 
     CTxDestination dest;

@@ -14,6 +14,18 @@
 
 struct KeyOriginInfo;
 
+struct ScriptPath
+{
+    uint8_t version = 0xc0;
+    CScript leaf;
+    std::vector<uint256> path;
+
+    void clear() {
+        leaf.clear();
+        path.clear();
+    }
+};
+
 /** An interface to be implemented by keystores that support signing. */
 class SigningProvider
 {
@@ -25,6 +37,14 @@ public:
     virtual bool GetKey(const CKeyID &address, CKey& key) const { return false; }
     virtual bool HaveKey(const CKeyID &address) const { return false; }
     virtual bool GetKeyOrigin(const CKeyID& keyid, KeyOriginInfo& info) const { return false; }
+    virtual bool GetScriptPaths(const CKeyID &addressid, std::vector<ScriptPath>& paths) const { return false; }
+    virtual bool GetP2CTweaks(const CKeyID &addressid, CPubKey& base, uint256& tweak) const { return false; }
+
+    SigningProvider() = default;
+protected:
+    // This prevents accidental object slicing.
+    SigningProvider(const SigningProvider&) = default;
+    SigningProvider& operator=(const SigningProvider&) = default;
 };
 
 extern const SigningProvider& DUMMY_SIGNING_PROVIDER;
@@ -42,6 +62,8 @@ public:
     bool GetPubKey(const CKeyID& keyid, CPubKey& pubkey) const override;
     bool GetKey(const CKeyID& keyid, CKey& key) const override;
     bool GetKeyOrigin(const CKeyID& keyid, KeyOriginInfo& info) const override;
+    bool GetScriptPaths(const CKeyID &addressid, std::vector<ScriptPath>& paths) const override;
+    bool GetP2CTweaks(const CKeyID &addressid, CPubKey& base, uint256& tweak) const override;
 };
 
 struct FlatSigningProvider final : public SigningProvider
@@ -50,11 +72,16 @@ struct FlatSigningProvider final : public SigningProvider
     std::map<CKeyID, CPubKey> pubkeys;
     std::map<CKeyID, std::pair<CPubKey, KeyOriginInfo>> origins;
     std::map<CKeyID, CKey> keys;
+    std::map<CKeyID, std::vector<ScriptPath>> taproot_paths;
+    std::map<CKeyID, std::pair<CPubKey, uint256>> p2c_tweaks;
 
     bool GetCScript(const CScriptID& scriptid, CScript& script) const override;
     bool GetPubKey(const CKeyID& keyid, CPubKey& pubkey) const override;
     bool GetKeyOrigin(const CKeyID& keyid, KeyOriginInfo& info) const override;
     bool GetKey(const CKeyID& keyid, CKey& key) const override;
+    bool GetScriptPaths(const CKeyID &addressid, std::vector<ScriptPath>& paths) const override;
+    bool GetP2CTweaks(const CKeyID &addressid, CPubKey& base, uint256& tweak) const override;
+
 };
 
 FlatSigningProvider Merge(const FlatSigningProvider& a, const FlatSigningProvider& b);

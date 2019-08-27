@@ -11,6 +11,7 @@
 
 #include <boost/variant.hpp>
 
+#include <pubkey.h>
 #include <stdint.h>
 
 static const bool DEFAULT_ACCEPT_DATACARRIER = true;
@@ -64,6 +65,7 @@ enum txnouttype
     TX_NULL_DATA, //!< unspendable OP_RETURN script that carries data
     TX_WITNESS_V0_SCRIPTHASH,
     TX_WITNESS_V0_KEYHASH,
+    TX_WITNESS_V1_TAPROOT,
     TX_WITNESS_UNKNOWN, //!< Only for Witness versions not already defined above
 };
 
@@ -95,6 +97,13 @@ struct WitnessV0ScriptHash : public uint256
     explicit WitnessV0ScriptHash(const uint256& hash) : uint256(hash) {}
     explicit WitnessV0ScriptHash(const CScript& script);
     using uint256::uint256;
+};
+
+struct WitnessV1Point : public CPubKey
+{
+    WitnessV1Point() : CPubKey() {}
+    explicit WitnessV1Point(const CPubKey& key) : CPubKey(key) {}
+    using CPubKey::CPubKey;
 };
 
 struct WitnessV0KeyHash : public uint160
@@ -134,9 +143,10 @@ struct WitnessUnknown
  *  * WitnessV0ScriptHash: TX_WITNESS_V0_SCRIPTHASH destination (P2WSH)
  *  * WitnessV0KeyHash: TX_WITNESS_V0_KEYHASH destination (P2WPKH)
  *  * WitnessUnknown: TX_WITNESS_UNKNOWN destination (P2W???)
+ *  * WitnessV1Point: Taproot destination
  *  A CTxDestination is the internal data type encoded in a bitcoin address
  */
-typedef boost::variant<CNoDestination, PKHash, ScriptHash, WitnessV0ScriptHash, WitnessV0KeyHash, WitnessUnknown> CTxDestination;
+typedef boost::variant<CNoDestination, PKHash, ScriptHash, WitnessV0ScriptHash, WitnessV0KeyHash, WitnessV1Point, WitnessUnknown> CTxDestination;
 
 /** Check whether a CTxDestination is a CNoDestination. */
 bool IsValidDestination(const CTxDestination& dest);

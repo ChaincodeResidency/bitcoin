@@ -168,6 +168,9 @@ static bool SignStep(const SigningProvider& provider, const BaseSignatureCreator
         sigdata.missing_witness_script = uint256(vSolutions[0]);
         return false;
 
+    case TX_WITNESS_V1_TAPROOT:
+        ret.push_back(vSolutions[0]);
+        return true;
     default:
         return false;
     }
@@ -187,6 +190,26 @@ static CScript PushAll(const std::vector<valtype>& values)
     }
     return result;
 }
+
+bool IsTaprootAllowed(txnouttype type) {
+    switch(type)
+    {
+    case TX_WITNESS_V1_TAPROOT:
+    case TX_WITNESS_V0_KEYHASH:
+    case TX_WITNESS_V0_SCRIPTHASH:
+    case TX_SCRIPTHASH:
+    case TX_NULL_DATA:
+    case TX_WITNESS_UNKNOWN:
+        return false;
+
+    case TX_PUBKEY:
+    case TX_PUBKEYHASH:
+    case TX_NONSTANDARD:
+    case TX_MULTISIG:
+        return true;
+    }
+}
+
 
 bool ProduceSignature(const SigningProvider& provider, const BaseSignatureCreator& creator, const CScript& fromPubKey, SignatureData& sigdata)
 {
@@ -230,6 +253,50 @@ bool ProduceSignature(const SigningProvider& provider, const BaseSignatureCreato
         sigdata.scriptWitness.stack = result;
         sigdata.witness = true;
         result.clear();
+    } else if (solved && whichType == TX_WITNESS_V1_TAPROOT) {
+        std::vector<unsigned char> address_vec(result[0]);
+        address_vec[0] += 2;
+        CPubKey address{address_vec}, base;
+        uint256 tweak;
+        txnouttype sub_type;
+        // First see if we control the point key in the witness program.
+        if (SignStep(provider, creator, (CScript() << address_vec << OP_CHECKSIG), result, sub_type, SigVersion::TAPROOT, sigdata)) {
+        // If not see if the signing provider have a Pay-To-Contract tweak for this key.
+        } else if(provider.GetP2CTweaks(address.GetID(), base, tweak)) {
+            std::vector<unsigned char> base_vec(base.begin(), base.end());
+            std::vector<unsigned char> control_block;
+            std::vector<ScriptPath> paths;
+            sigdata.p2c_tweaks.emplace(base, tweak);
+            base_vec[0] -= 2;
+            // TODO: Should I assume that if I can't sign fo`r the tweaked key then I can't sign for the base key?. if so the next if can be removed.
+            // Check if we're in control with the base key.
+            if (!SignStep(provider, creator, (CScript() << base_vec << OP_CHECKSIG), result, sub_type, SigVersion::TAPROOT, sigdata)) {
+                if(provider.GetScriptPaths(address.GetID(), paths)) {
+                    bool can_sign_any_path = false;
+                    for (auto& path : paths) {
+                        // Check if we can sign for any of the paths scripts.
+                        if (SignStep(provider, creator, path.leaf, result, sub_type, SigVersion::TAPROOT, sigdata) && IsTaprootAllowed(sub_type)) {
+                            ExtendByteVector(base_vec, control_block);
+                            for (auto& hash : path.path) {
+                                ExtendByteVector(hash, control_block);
+                            }
+                            sigdata.taproot_script_path = path;
+                            can_sign_any_path = true;
+                            break; // break out the second we found a script we can sign for.
+                        }
+                    }
+                    solved = solved && can_sign_any_path;
+                } else {
+                    solved = false;
+                }
+                if (!control_block.empty()) result.emplace_back(control_block);
+            }
+        } else {
+            solved = false;
+        }
+        sigdata.witness = true;
+        sigdata.scriptWitness.stack = result;
+        result.clear();
     } else if (solved && whichType == TX_WITNESS_UNKNOWN) {
         sigdata.witness = true;
     }
@@ -238,7 +305,6 @@ bool ProduceSignature(const SigningProvider& provider, const BaseSignatureCreato
         result.push_back(std::vector<unsigned char>(subscript.begin(), subscript.end()));
     }
     sigdata.scriptSig = PushAll(result);
-
     // Test solution
     sigdata.complete = solved && VerifyScript(sigdata.scriptSig, fromPubKey, &sigdata.scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS, creator.Checker());
     return sigdata.complete;
@@ -454,14 +520,25 @@ bool IsSegWitOutput(const SigningProvider& provider, const CScript& script)
 {
     std::vector<valtype> solutions;
     auto whichtype = Solver(script, solutions);
-    if (whichtype == TX_WITNESS_V0_SCRIPTHASH || whichtype == TX_WITNESS_V0_KEYHASH || whichtype == TX_WITNESS_UNKNOWN) return true;
-    if (whichtype == TX_SCRIPTHASH) {
+    switch (whichtype) {
+    case TX_WITNESS_V0_SCRIPTHASH:
+    case TX_WITNESS_V0_KEYHASH:
+    case TX_WITNESS_V1_TAPROOT:
+    case TX_WITNESS_UNKNOWN:
+        return true;
+    case TX_NULL_DATA:
+    case TX_PUBKEY:
+    case TX_PUBKEYHASH:
+    case TX_NONSTANDARD:
+    case TX_MULTISIG:
+        return false;
+    case TX_SCRIPTHASH: {
         auto h160 = uint160(solutions[0]);
         CScript subscript;
-        if (provider.GetCScript(h160, subscript)) {
-            whichtype = Solver(subscript, solutions);
-            if (whichtype == TX_WITNESS_V0_SCRIPTHASH || whichtype == TX_WITNESS_V0_KEYHASH || whichtype == TX_WITNESS_UNKNOWN) return true;
-        }
+        if (provider.GetCScript(h160, subscript))
+            return IsSegWitOutput(provider, subscript);
+        else
+            return false;
     }
-    return false;
+    }
 }

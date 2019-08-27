@@ -44,6 +44,18 @@ bool HidingSigningProvider::GetKeyOrigin(const CKeyID& keyid, KeyOriginInfo& inf
     return m_provider->GetKeyOrigin(keyid, info);
 }
 
+bool HidingSigningProvider::GetScriptPaths(const CKeyID &addressid, std::vector<ScriptPath>& paths) const
+{
+    if (m_hide_origin) return false;
+    return m_provider->GetScriptPaths(addressid, paths);
+}
+
+bool HidingSigningProvider::GetP2CTweaks(const CKeyID &addressid, CPubKey& base, uint256& tweak) const
+{
+    if (m_hide_origin) return false;
+    return m_provider->GetP2CTweaks(addressid, base, tweak);
+}
+
 bool FlatSigningProvider::GetCScript(const CScriptID& scriptid, CScript& script) const { return LookupHelper(scripts, scriptid, script); }
 bool FlatSigningProvider::GetPubKey(const CKeyID& keyid, CPubKey& pubkey) const { return LookupHelper(pubkeys, keyid, pubkey); }
 bool FlatSigningProvider::GetKeyOrigin(const CKeyID& keyid, KeyOriginInfo& info) const
@@ -54,6 +66,21 @@ bool FlatSigningProvider::GetKeyOrigin(const CKeyID& keyid, KeyOriginInfo& info)
     return ret;
 }
 bool FlatSigningProvider::GetKey(const CKeyID& keyid, CKey& key) const { return LookupHelper(keys, keyid, key); }
+
+
+bool FlatSigningProvider::GetScriptPaths(const CKeyID &addressid, std::vector<ScriptPath>& paths) const { return LookupHelper(taproot_paths, addressid, paths); }
+
+bool FlatSigningProvider::GetP2CTweaks(const CKeyID &addressid, CPubKey& base, uint256& tweak) const
+{
+    std::pair<CPubKey, uint256> out;
+    bool ret = LookupHelper(p2c_tweaks, addressid, out);
+    if(ret) {
+        base = out.first;
+        tweak = out.second;
+    }
+    return ret;
+}
+
 
 FlatSigningProvider Merge(const FlatSigningProvider& a, const FlatSigningProvider& b)
 {

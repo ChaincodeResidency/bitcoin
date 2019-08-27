@@ -209,6 +209,8 @@ public:
 
     //! Verify a P2C derivation. Hash must be a cryptographic hash that commits to base.
     bool CheckPayToContract(const CPubKey& base, const uint256& hash) const;
+
+    bool CreatePayToContract(CPubKey& res, const uint256& hash) const;
 };
 
 struct CExtPubKey {

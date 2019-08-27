@@ -221,13 +221,22 @@ BOOST_AUTO_TEST_CASE(script_standard_ExtractDestination)
     BOOST_CHECK(ExtractDestination(s, address));
     BOOST_CHECK(boost::get<WitnessV0ScriptHash>(&address) && *boost::get<WitnessV0ScriptHash>(&address) == scripthash);
 
+    // TX_WITNESS_V1_SCRIPTHASH
+    s.clear();
+    WitnessV1Point taproot(pubkey);
+    auto modified_key = ToByteVector(pubkey);
+    modified_key[0] -= 2;
+    s << OP_1 << modified_key;
+    BOOST_CHECK(ExtractDestination(s, address));
+    BOOST_CHECK(boost::get<WitnessV1Point>(&address) && *boost::get<WitnessV1Point>(&address) == taproot);
+
     // TX_WITNESS with unknown version
     s.clear();
-    s << OP_1 << ToByteVector(pubkey);
+    s << OP_2 << ToByteVector(pubkey);
     BOOST_CHECK(ExtractDestination(s, address));
     WitnessUnknown unk;
     unk.length = 33;
-    unk.version = 1;
+    unk.version = 2;
     std::copy(pubkey.begin(), pubkey.end(), unk.program);
     BOOST_CHECK(boost::get<WitnessUnknown>(&address) && *boost::get<WitnessUnknown>(&address) == unk);
 }

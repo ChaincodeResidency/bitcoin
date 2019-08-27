@@ -3616,6 +3616,17 @@ public:
         return obj;
     }
 
+    UniValue operator()(const WitnessV1Point& id) const
+    {
+        UniValue obj(UniValue::VOBJ);
+        CPubKey pubkey;
+        // TODO: Add tweak and script paths?
+        if (pwallet && pwallet->GetPubKey(CKeyID(id.GetID()), pubkey)) {
+            obj.pushKV("taproot internal-key", HexStr(pubkey));
+        }
+        return obj;
+    }
+
     UniValue operator()(const WitnessUnknown& id) const { return UniValue(UniValue::VOBJ); }
 };
 
