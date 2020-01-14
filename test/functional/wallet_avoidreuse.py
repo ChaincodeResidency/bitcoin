@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2018 The Bitcoin Core developers
+# Copyright (c) 2018-2019 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the avoid_reuse and setwalletflag features."""
@@ -68,6 +68,9 @@ class AvoidReuseTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = False
         self.num_nodes = 2
+        # This test isn't testing txn relay/timing, so set whitelist on the
+        # peers for instant txn relay. This speeds up the test run time 2-3x.
+        self.extra_args = [["-whitelist=127.0.0.1"]] * self.num_nodes
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
@@ -83,10 +86,17 @@ class AvoidReuseTest(BitcoinTestFramework):
         reset_balance(self.nodes[1], self.nodes[0].getnewaddress())
         self.test_fund_send_fund_senddirty()
         reset_balance(self.nodes[1], self.nodes[0].getnewaddress())
-        self.test_fund_send_fund_send()
+        self.test_fund_send_fund_send("legacy")
+        reset_balance(self.nodes[1], self.nodes[0].getnewaddress())
+        self.test_fund_send_fund_send("p2sh-segwit")
+        reset_balance(self.nodes[1], self.nodes[0].getnewaddress())
+        self.test_fund_send_fund_send("bech32")
+
 
     def test_persistence(self):
         '''Test that wallet files persist the avoid_reuse flag.'''
+        self.log.info("Test wallet files persist avoid_reuse flag")
+
         # Configure node 1 to use avoid_reuse
         self.nodes[1].setwalletflag('avoid_reuse')
 
@@ -109,6 +119,8 @@ class AvoidReuseTest(BitcoinTestFramework):
 
     def test_immutable(self):
         '''Test immutable wallet flags'''
+        self.log.info("Test immutable wallet flags")
+
         # Attempt to set the disable_private_keys flag; this should not work
         assert_raises_rpc_error(-8, "Wallet flag is immutable", self.nodes[1].setwalletflag, 'disable_private_keys')
 
@@ -130,6 +142,7 @@ class AvoidReuseTest(BitcoinTestFramework):
         the avoid_reuse flag set to false. This means the 10 BTC send should succeed,
         where it fails in test_fund_send_fund_send.
         '''
+        self.log.info("Test fund send fund send dirty")
 
         fundaddr = self.nodes[1].getnewaddress()
         retaddr = self.nodes[0].getnewaddress()
@@ -174,7 +187,7 @@ class AvoidReuseTest(BitcoinTestFramework):
         assert_approx(self.nodes[1].getbalance(), 5, 0.001)
         assert_approx(self.nodes[1].getbalance(avoid_reuse=False), 5, 0.001)
 
-    def test_fund_send_fund_send(self):
+    def test_fund_send_fund_send(self, second_addr_type):
         '''
         Test the simple case where [1] generates a new address A, then
         [0] sends 10 BTC to A.
@@ -183,8 +196,9 @@ class AvoidReuseTest(BitcoinTestFramework):
         [1] tries to spend 10 BTC (fails; dirty).
         [1] tries to spend 4 BTC (succeeds; change address sufficient)
         '''
+        self.log.info("Test fund send fund send")
 
-        fundaddr = self.nodes[1].getnewaddress()
+        fundaddr = self.nodes[1].getnewaddress(label="", address_type="legacy")
         retaddr = self.nodes[0].getnewaddress()
 
         self.nodes[0].sendtoaddress(fundaddr, 10)
@@ -205,7 +219,19 @@ class AvoidReuseTest(BitcoinTestFramework):
         # getbalances should show no used, 5 btc trusted
         assert_balances(self.nodes[1], mine={"used": 0, "trusted": 5})
 
-        self.nodes[0].sendtoaddress(fundaddr, 10)
+        # For the second send, we transmute it to a related single-key address
+        # to make sure it's also detected as re-use
+        fund_spk = self.nodes[0].getaddressinfo(fundaddr)["scriptPubKey"]
+        fund_decoded = self.nodes[0].decodescript(fund_spk)
+        if second_addr_type == "p2sh-segwit":
+            new_fundaddr = fund_decoded["segwit"]["p2sh-segwit"]
+        elif second_addr_type == "bech32":
+            new_fundaddr = fund_decoded["segwit"]["addresses"][0]
+        else:
+            new_fundaddr = fundaddr
+            assert_equal(second_addr_type, "legacy")
+
+        self.nodes[0].sendtoaddress(new_fundaddr, 10)
         self.nodes[0].generate(1)
         self.sync_all()
 

@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2018 The Bitcoin Core developers
+// Copyright (c) 2009-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -49,8 +49,6 @@ struct LockPoints
 
     LockPoints() : height(0), time(0), maxInputBlock(nullptr) { }
 };
-
-class CTxMemPool;
 
 /** \class CTxMemPoolEntry
  *

@@ -13,7 +13,7 @@
 #include <qt/transactionview.h>
 #include <qt/walletmodel.h>
 #include <key_io.h>
-#include <test/setup_common.h>
+#include <test/util/setup_common.h>
 #include <validation.h>
 #include <wallet/wallet.h>
 #include <qt/overviewpage.h>
@@ -134,15 +134,18 @@ void TestGUI(interfaces::Node& node)
         test.CreateAndProcessBlock({}, GetScriptForRawPubKey(test.coinbaseKey.GetPubKey()));
     }
     node.context()->connman = std::move(test.m_node.connman);
+    node.context()->mempool = std::move(test.m_node.mempool);
     std::shared_ptr<CWallet> wallet = std::make_shared<CWallet>(node.context()->chain.get(), WalletLocation(), WalletDatabase::CreateMock());
     bool firstRun;
     wallet->LoadWallet(firstRun);
     {
         auto spk_man = wallet->GetLegacyScriptPubKeyMan();
+        auto locked_chain = wallet->chain().lock();
         LOCK(wallet->cs_wallet);
         AssertLockHeld(spk_man->cs_wallet);
         wallet->SetAddressBook(GetDestinationForKey(test.coinbaseKey.GetPubKey(), wallet->m_default_address_type), "", "receive");
         spk_man->AddKeyPubKey(test.coinbaseKey, test.coinbaseKey.GetPubKey());
+        wallet->SetLastBlockProcessed(105, ::ChainActive().Tip()->GetBlockHash());
     }
     {
         auto locked_chain = wallet->chain().lock();
@@ -167,6 +170,16 @@ void TestGUI(interfaces::Node& node)
     RemoveWallet(wallet);
     sendCoinsDialog.setModel(&walletModel);
     transactionView.setModel(&walletModel);
+
+    {
+        // Check balance in send dialog
+        QLabel* balanceLabel = sendCoinsDialog.findChild<QLabel*>("labelBalance");
+        QString balanceText = balanceLabel->text();
+        int unit = walletModel.getOptionsModel()->getDisplayUnit();
+        CAmount balance = walletModel.wallet().getBalance();
+        QString balanceComparison = BitcoinUnits::formatWithUnit(unit, balance, false, BitcoinUnits::separatorAlways);
+        QCOMPARE(balanceText, balanceComparison);
+    }
 
     // Send two transactions, and verify they are added to transaction list.
     TransactionTableModel* transactionTableModel = walletModel.getTransactionTableModel();

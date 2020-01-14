@@ -4,7 +4,7 @@
 
 #include <test/data/tx_invalid.json.h>
 #include <test/data/tx_valid.json.h>
-#include <test/setup_common.h>
+#include <test/util/setup_common.h>
 
 #include <clientversion.h>
 #include <checkqueue.h>
@@ -713,6 +713,29 @@ BOOST_AUTO_TEST_CASE(test_IsStandard)
     t.vout[0].nValue = nDustThreshold;
     BOOST_CHECK(IsStandardTx(CTransaction(t), reason));
 
+    // Disallowed nVersion
+    t.nVersion = -1;
+    reason.clear();
+    BOOST_CHECK(!IsStandardTx(CTransaction(t), reason));
+    BOOST_CHECK_EQUAL(reason, "version");
+
+    t.nVersion = 0;
+    reason.clear();
+    BOOST_CHECK(!IsStandardTx(CTransaction(t), reason));
+    BOOST_CHECK_EQUAL(reason, "version");
+
+    t.nVersion = 3;
+    reason.clear();
+    BOOST_CHECK(!IsStandardTx(CTransaction(t), reason));
+    BOOST_CHECK_EQUAL(reason, "version");
+
+    // Allowed nVersion
+    t.nVersion = 1;
+    BOOST_CHECK(IsStandardTx(CTransaction(t), reason));
+
+    t.nVersion = 2;
+    BOOST_CHECK(IsStandardTx(CTransaction(t), reason));
+
     // Check dust with odd relay fee to verify rounding:
     // nDustThreshold = 182 * 3702 / 1000
     dustRelayFee = CFeeRate(3702);
@@ -784,6 +807,30 @@ BOOST_AUTO_TEST_CASE(test_IsStandard)
     reason.clear();
     BOOST_CHECK(!IsStandardTx(CTransaction(t), reason));
     BOOST_CHECK_EQUAL(reason, "multi-op-return");
+
+    // Check large scriptSig (non-standard if size is >1650 bytes)
+    t.vout.resize(1);
+    t.vout[0].nValue = MAX_MONEY;
+    t.vout[0].scriptPubKey = GetScriptForDestination(PKHash(key.GetPubKey()));
+    // OP_PUSHDATA2 with len (3 bytes) + data (1647 bytes) = 1650 bytes
+    t.vin[0].scriptSig = CScript() << std::vector<unsigned char>(1647, 0); // 1650
+    BOOST_CHECK(IsStandardTx(CTransaction(t), reason));
+
+    t.vin[0].scriptSig = CScript() << std::vector<unsigned char>(1648, 0); // 1651
+    reason.clear();
+    BOOST_CHECK(!IsStandardTx(CTransaction(t), reason));
+    BOOST_CHECK_EQUAL(reason, "scriptsig-size");
+
+    // Check bare multisig (standard if policy flag fIsBareMultisigStd is set)
+    fIsBareMultisigStd = true;
+    t.vout[0].scriptPubKey = GetScriptForMultisig(1, {key.GetPubKey()}); // simple 1-of-1
+    t.vin[0].scriptSig = CScript() << std::vector<unsigned char>(65, 0);
+    BOOST_CHECK(IsStandardTx(CTransaction(t), reason));
+
+    fIsBareMultisigStd = false;
+    reason.clear();
+    BOOST_CHECK(!IsStandardTx(CTransaction(t), reason));
+    BOOST_CHECK_EQUAL(reason, "bare-multisig");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

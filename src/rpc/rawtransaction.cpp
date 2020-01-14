@@ -139,7 +139,7 @@ static UniValue getrawtransaction(const JSONRPCRequest& request)
             "  ],\n"
             "  \"blockhash\" : \"hash\",   (string) the block hash\n"
             "  \"confirmations\" : n,      (numeric) The confirmations\n"
-            "  \"blocktime\" : ttt         (numeric) The block time in seconds since epoch (Jan 1 1970 GMT)\n"
+            "  \"blocktime\" : ttt         (numeric) The block time expressed in " + UNIX_EPOCH_TIME + "\n"
             "  \"time\" : ttt,             (numeric) Same as \"blocktime\"\n"
             "}\n"
                     },
@@ -636,6 +636,7 @@ static UniValue combinerawtransaction(const JSONRPCRequest& request)
     CCoinsView viewDummy;
     CCoinsViewCache view(&viewDummy);
     {
+        const CTxMemPool& mempool = EnsureMemPool();
         LOCK(cs_main);
         LOCK(mempool.cs);
         CCoinsViewCache &viewChain = ::ChainstateActive().CoinsTip();
@@ -758,12 +759,14 @@ static UniValue signrawtransactionwithkey(const JSONRPCRequest& request)
     for (const CTxIn& txin : mtx.vin) {
         coins[txin.prevout]; // Create empty map entry keyed by prevout.
     }
-    FindCoins(coins);
+    FindCoins(*g_rpc_node, coins);
 
     // Parse the prevtxs array
     ParsePrevouts(request.params[2], &keystore, coins);
 
-    return SignTransaction(mtx, &keystore, coins, request.params[3]);
+    UniValue result(UniValue::VOBJ);
+    SignTransaction(mtx, &keystore, coins, request.params[3], result);
+    return result;
 }
 
 static UniValue sendrawtransaction(const JSONRPCRequest& request)
@@ -888,6 +891,7 @@ static UniValue testmempoolaccept(const JSONRPCRequest& request)
         max_raw_tx_fee_rate = CFeeRate(AmountFromValue(request.params[1]));
     }
 
+    CTxMemPool& mempool = EnsureMemPool();
     int64_t virtual_size = GetVirtualTransactionSize(*tx);
     CAmount max_raw_tx_fee = max_raw_tx_fee_rate.GetFee(virtual_size);
 
@@ -1506,6 +1510,7 @@ UniValue utxoupdatepsbt(const JSONRPCRequest& request)
     CCoinsView viewDummy;
     CCoinsViewCache view(&viewDummy);
     {
+        const CTxMemPool& mempool = EnsureMemPool();
         LOCK2(cs_main, mempool.cs);
         CCoinsViewCache &viewChain = ::ChainstateActive().CoinsTip();
         CCoinsViewMemPool viewMempool(&viewChain, mempool);
@@ -1620,7 +1625,7 @@ UniValue joinpsbts(const JSONRPCRequest& request)
     std::vector<int> output_indices(merged_psbt.outputs.size());
     std::iota(output_indices.begin(), output_indices.end(), 0);
 
-    // Shuffle input and output indicies lists
+    // Shuffle input and output indices lists
     Shuffle(input_indices.begin(), input_indices.end(), FastRandomContext());
     Shuffle(output_indices.begin(), output_indices.end(), FastRandomContext());
 
@@ -1672,6 +1677,7 @@ UniValue analyzepsbt(const JSONRPCRequest& request)
                 "  \"estimated_feerate\" : feerate   (numeric, optional) Estimated feerate of the final signed transaction in " + CURRENCY_UNIT + "/kB. Shown only if all UTXO slots in the PSBT have been filled.\n"
                 "  \"fee\" : fee                     (numeric, optional) The transaction fee paid. Shown only if all UTXO slots in the PSBT have been filled.\n"
                 "  \"next\" : \"role\"                 (string) Role of the next person that this psbt needs to go to\n"
+                "  \"error\" : \"error\"               (string) Error message if there is one\n"
                 "}\n"
             },
             RPCExamples {
@@ -1724,7 +1730,7 @@ UniValue analyzepsbt(const JSONRPCRequest& request)
         }
         inputs_result.push_back(input_univ);
     }
-    result.pushKV("inputs", inputs_result);
+    if (!inputs_result.empty()) result.pushKV("inputs", inputs_result);
 
     if (psbta.estimated_vsize != nullopt) {
         result.pushKV("estimated_vsize", (int)*psbta.estimated_vsize);
@@ -1736,6 +1742,9 @@ UniValue analyzepsbt(const JSONRPCRequest& request)
         result.pushKV("fee", ValueFromAmount(*psbta.fee));
     }
     result.pushKV("next", PSBTRoleName(psbta.next));
+    if (!psbta.error.empty()) {
+        result.pushKV("error", psbta.error);
+    }
 
     return result;
 }

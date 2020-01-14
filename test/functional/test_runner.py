@@ -136,6 +136,7 @@ BASE_SCRIPTS = [
     'interface_rpc.py',
     'rpc_psbt.py',
     'rpc_users.py',
+    'rpc_whitelist.py',
     'feature_proxy.py',
     'rpc_signrawtransaction.py',
     'wallet_groups.py',
@@ -181,6 +182,7 @@ BASE_SCRIPTS = [
     'mining_basic.py',
     'wallet_bumpfee.py',
     'wallet_bumpfee_totalfee_deprecation.py',
+    'wallet_implicitsegwit.py',
     'rpc_named_arguments.py',
     'wallet_listsinceblock.py',
     'p2p_leak.py',
@@ -190,6 +192,7 @@ BASE_SCRIPTS = [
     'rpc_uptime.py',
     'wallet_resendwallettransactions.py',
     'wallet_fallbackfee.py',
+    'rpc_dumptxoutset.py',
     'feature_minchainwork.py',
     'rpc_getblockstats.py',
     'wallet_create_tx.py',
@@ -209,6 +212,7 @@ BASE_SCRIPTS = [
     'p2p_permissions.py',
     'feature_blocksdir.py',
     'feature_config_args.py',
+    'rpc_getaddressinfo_labels_purpose_deprecation.py',
     'rpc_help.py',
     'feature_help.py',
     'feature_shutdown.py',
@@ -362,9 +366,10 @@ def main():
 def run_tests(*, test_list, src_dir, build_dir, tmpdir, jobs=1, enable_coverage=False, args=None, combined_logs_len=0, failfast=False, runs_ci, use_term_control):
     args = args or []
 
-    # Warn if bitcoind is already running (unix only)
+    # Warn if bitcoind is already running
+    # pidof might fail or return an empty string if bitcoind is not running
     try:
-        if subprocess.check_output(["pidof", "bitcoind"]) is not None:
+        if subprocess.check_output(["pidof", "bitcoind"]) not in [b'']:
             print("%sWARNING!%s There is already a bitcoind process running on this system. Tests may fail unexpectedly due to resource contention!" % (BOLD[1], BOLD[0]))
     except (OSError, subprocess.SubprocessError):
         pass

@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2018 The Bitcoin Core developers
+// Copyright (c) 2011-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -36,12 +36,16 @@
 #include <config/bitcoin-config.h>
 #endif
 
-#include <qt/walletmodel.h>
+#include <qt/sendcoinsrecipient.h>
 
 #include <QObject>
 #include <QString>
 
 class OptionsModel;
+
+namespace interfaces {
+class Node;
+} // namespace interfaces
 
 QT_BEGIN_NAMESPACE
 class QApplication;

@@ -190,6 +190,11 @@ def check_json_precision():
     if satoshis != 2000000000000003:
         raise RuntimeError("JSON encode/decode loses precision")
 
+def EncodeDecimal(o):
+    if isinstance(o, Decimal):
+        return str(o)
+    raise TypeError(repr(o) + " is not JSON serializable")
+
 def count_bytes(hex_string):
     return len(bytearray.fromhex(hex_string))
 
@@ -316,6 +321,7 @@ def initialize_datadir(dirname, n, chain):
         f.write("listenonion=0\n")
         f.write("printtoconsole=0\n")
         f.write("upnp=0\n")
+        f.write("shrinkdebugfile=0\n")
         os.makedirs(os.path.join(datadir, 'stderr'), exist_ok=True)
         os.makedirs(os.path.join(datadir, 'stdout'), exist_ok=True)
     return datadir

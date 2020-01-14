@@ -43,7 +43,7 @@ class Wallet;
 //!   asynchronously
 //!   (https://github.com/bitcoin/bitcoin/pull/10973#issuecomment-380101269).
 //!
-//! * The initMessages() and loadWallet() methods which the wallet uses to send
+//! * The initMessage() and showProgress() methods which the wallet uses to send
 //!   notifications to the GUI should go away when GUI and wallet can directly
 //!   communicate with each other without going through the node
 //!   (https://github.com/bitcoin/bitcoin/pull/15288#discussion_r253321096).
@@ -75,10 +75,6 @@ public:
         //! 1 for following block, and so on. Returns nullopt for a block not
         //! included in the current chain.
         virtual Optional<int> getBlockHeight(const uint256& hash) = 0;
-
-        //! Get block depth. Returns 1 for chain tip, 2 for preceding block, and
-        //! so on. Returns 0 for a block not included in the current chain.
-        virtual int getBlockDepth(const uint256& hash) = 0;
 
         //! Get block hash. Height must be valid or this function will abort.
         virtual uint256 getBlockHash(int height) = 0;
@@ -213,9 +209,6 @@ public:
     //! Send init error.
     virtual void initError(const std::string& message) = 0;
 
-    //! Send wallet load notification to the GUI.
-    virtual void loadWallet(std::unique_ptr<Wallet> wallet) = 0;
-
     //! Send progress indicator.
     virtual void showProgress(const std::string& title, int progress, bool resume_possible) = 0;
 
@@ -226,8 +219,8 @@ public:
         virtual ~Notifications() {}
         virtual void TransactionAddedToMempool(const CTransactionRef& tx) {}
         virtual void TransactionRemovedFromMempool(const CTransactionRef& ptx) {}
-        virtual void BlockConnected(const CBlock& block, const std::vector<CTransactionRef>& tx_conflicted) {}
-        virtual void BlockDisconnected(const CBlock& block) {}
+        virtual void BlockConnected(const CBlock& block, const std::vector<CTransactionRef>& tx_conflicted, int height) {}
+        virtual void BlockDisconnected(const CBlock& block, int height) {}
         virtual void UpdatedBlockTip() {}
         virtual void ChainStateFlushed(const CBlockLocator& locator) {}
     };
@@ -236,9 +229,8 @@ public:
     virtual std::unique_ptr<Handler> handleNotifications(Notifications& notifications) = 0;
 
     //! Wait for pending notifications to be processed unless block hash points to the current
-    //! chain tip, or to a possible descendant of the current chain tip that isn't currently
-    //! connected.
-    virtual void waitForNotificationsIfNewBlocksConnected(const uint256& old_tip) = 0;
+    //! chain tip.
+    virtual void waitForNotificationsIfTipChanged(const uint256& old_tip) = 0;
 
     //! Register handler for RPC. Command is not copied, so reference
     //! needs to remain valid until Handler is disconnected.

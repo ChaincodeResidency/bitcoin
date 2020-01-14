@@ -1,4 +1,4 @@
-// Copyright (c) 2017-2018 The Bitcoin Core developers
+// Copyright (c) 2017-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -51,5 +51,7 @@ void CalculatePercentilesByWeight(CAmount result[NUM_GETBLOCKSTATS_PERCENTILES],
 //! RPC methods. Due to limitations of the RPC framework, there's currently no
 //! direct way to pass in state to RPC methods without globals.
 extern NodeContext* g_rpc_node;
+
+CTxMemPool& EnsureMemPool();
 
 #endif

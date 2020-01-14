@@ -37,6 +37,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         self.extra_args = [[
             '-txindex',
         ]] * self.num_nodes
+        self.supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
@@ -264,6 +265,12 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         tx.vin[0].scriptSig = CScript([OP_HASH160])  # Some not-pushonly scriptSig
         self.check_mempool_result(
             result_expected=[{'txid': tx.rehash(), 'allowed': False, 'reject-reason': 'scriptsig-not-pushonly'}],
+            rawtxs=[tx.serialize().hex()],
+        )
+        tx.deserialize(BytesIO(hex_str_to_bytes(raw_tx_reference)))
+        tx.vin[0].scriptSig = CScript([b'a' * 1648]) # Some too large scriptSig (>1650 bytes)
+        self.check_mempool_result(
+            result_expected=[{'txid': tx.rehash(), 'allowed': False, 'reject-reason': 'scriptsig-size'}],
             rawtxs=[tx.serialize().hex()],
         )
         tx.deserialize(BytesIO(hex_str_to_bytes(raw_tx_reference)))

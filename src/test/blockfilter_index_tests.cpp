@@ -8,8 +8,9 @@
 #include <index/blockfilterindex.h>
 #include <miner.h>
 #include <pow.h>
-#include <test/setup_common.h>
 #include <script/standard.h>
+#include <test/util/blockfilter.h>
+#include <test/util/setup_common.h>
 #include <util/time.h>
 #include <validation.h>
 
@@ -17,22 +18,10 @@
 
 BOOST_AUTO_TEST_SUITE(blockfilter_index_tests)
 
-static bool ComputeFilter(BlockFilterType filter_type, const CBlockIndex* block_index,
-                          BlockFilter& filter)
-{
-    CBlock block;
-    if (!ReadBlockFromDisk(block, block_index->GetBlockPos(), Params().GetConsensus())) {
-        return false;
-    }
-
-    CBlockUndo block_undo;
-    if (block_index->nHeight > 0 && !UndoReadFromDisk(block_undo, block_index)) {
-        return false;
-    }
-
-    filter = BlockFilter(filter_type, block, block_undo);
-    return true;
-}
+struct BuildChainTestingSetup : public TestChain100Setup {
+    CBlock CreateBlock(const CBlockIndex* prev, const std::vector<CMutableTransaction>& txns, const CScript& scriptPubKey);
+    bool BuildChain(const CBlockIndex* pindex, const CScript& coinbase_script_pub_key, size_t length, std::vector<std::shared_ptr<CBlock>>& chain);
+};
 
 static bool CheckFilterLookups(BlockFilterIndex& filter_index, const CBlockIndex* block_index,
                                uint256& last_header)
@@ -68,12 +57,12 @@ static bool CheckFilterLookups(BlockFilterIndex& filter_index, const CBlockIndex
     return true;
 }
 
-static CBlock CreateBlock(const CBlockIndex* prev,
-                          const std::vector<CMutableTransaction>& txns,
-                          const CScript& scriptPubKey)
+CBlock BuildChainTestingSetup::CreateBlock(const CBlockIndex* prev,
+    const std::vector<CMutableTransaction>& txns,
+    const CScript& scriptPubKey)
 {
     const CChainParams& chainparams = Params();
-    std::unique_ptr<CBlockTemplate> pblocktemplate = BlockAssembler(chainparams).CreateNewBlock(scriptPubKey);
+    std::unique_ptr<CBlockTemplate> pblocktemplate = BlockAssembler(*m_node.mempool, chainparams).CreateNewBlock(scriptPubKey);
     CBlock& block = pblocktemplate->block;
     block.hashPrevBlock = prev->GetBlockHash();
     block.nTime = prev->nTime + 1;
@@ -92,8 +81,10 @@ static CBlock CreateBlock(const CBlockIndex* prev,
     return block;
 }
 
-static bool BuildChain(const CBlockIndex* pindex, const CScript& coinbase_script_pub_key,
-                       size_t length, std::vector<std::shared_ptr<CBlock>>& chain)
+bool BuildChainTestingSetup::BuildChain(const CBlockIndex* pindex,
+    const CScript& coinbase_script_pub_key,
+    size_t length,
+    std::vector<std::shared_ptr<CBlock>>& chain)
 {
     std::vector<CMutableTransaction> no_txns;
 
@@ -111,7 +102,7 @@ static bool BuildChain(const CBlockIndex* pindex, const CScript& coinbase_script
     return true;
 }
 
-BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, TestChain100Setup)
+BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, BuildChainTestingSetup)
 {
     BlockFilterIndex filter_index(BlockFilterType::BASIC, 1 << 20, true);
 

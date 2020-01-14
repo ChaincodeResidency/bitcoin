@@ -1,13 +1,13 @@
-// Copyright (c) 2018 The Bitcoin Core developers
+// Copyright (c) 2018-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_INTERFACES_NODE_H
 #define BITCOIN_INTERFACES_NODE_H
 
-#include <addrdb.h>     // For banmap_t
 #include <amount.h>     // For CAmount
 #include <net.h>        // For CConnman::NumConnections
+#include <net_types.h>  // For banmap_t
 #include <netaddress.h> // For Network
 #include <support/allocators/secure.h> // For SecureString
 
@@ -78,7 +78,7 @@ public:
     virtual void initParameterInteraction() = 0;
 
     //! Get warnings.
-    virtual std::string getWarnings(const std::string& type) = 0;
+    virtual std::string getWarnings() = 0;
 
     // Get log flags.
     virtual uint32_t getLogCategories() = 0;
